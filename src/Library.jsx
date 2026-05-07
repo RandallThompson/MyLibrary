@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, BookOpen, ChevronDown, ChevronRight, AlertTriangle,
-  Library as LibraryIcon, Trash2, RefreshCw, Settings as SettingsIcon, Upload
+  Library as LibraryIcon, Trash2, RefreshCw, Settings as SettingsIcon, Upload, Pencil
 } from "lucide-react";
 import {
   syncFromServer, getAllBooks, addBook as dsAddBook,
@@ -45,6 +45,7 @@ export default function Library({ session }) {
   const [highlightedId, setHighlightedId] = useState(null);
 
   const [showAdd, setShowAdd] = useState(false);
+  const [editingBook, setEditingBook] = useState(null); // book object or null
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -126,6 +127,32 @@ export default function Library({ session }) {
               seriesKnownTotalRefreshedAt: new Date().toISOString()
             }).then(updated => {
               setBooks(prev => prev.map(b => b.id === updated.id ? updated : b));
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }
+  };
+
+  // ---------- Edit ----------
+  const handleEdit = async (input) => {
+    // input has { id, title, author, series, seriesNumber }
+    const existing = books.find(b => b.id === input.id);
+    if (!existing) return;
+    const updated = await updateBook(input.id, { ...existing, ...input });
+    setBooks(prev => prev.map(b => b.id === updated.id ? updated : b));
+    setEditingBook(null);
+    // If series changed (new series, or had no total cached), re-fetch.
+    if (online && updated.series && (existing.series !== updated.series || !updated.seriesKnownTotal)) {
+      lookupSeriesTotal({ author: updated.author, series: updated.series })
+        .then(total => {
+          if (total) {
+            updateBook(updated.id, {
+              ...updated,
+              seriesKnownTotal: total,
+              seriesKnownTotalRefreshedAt: new Date().toISOString()
+            }).then(u2 => {
+              setBooks(prev => prev.map(b => b.id === u2.id ? u2 : b));
             }).catch(() => {});
           }
         })
@@ -381,6 +408,7 @@ export default function Library({ session }) {
                                   key={b.id}
                                   book={b}
                                   onRemove={handleRemove}
+                                  onEdit={setEditingBook}
                                   highlight={highlightedId === b.id}
                                   registerRef={(el) => {
                                     if (el) bookRefs.current.set(b.id, el);
@@ -406,6 +434,7 @@ export default function Library({ session }) {
                                   key={b.id}
                                   book={b}
                                   onRemove={handleRemove}
+                                  onEdit={setEditingBook}
                                   highlight={highlightedId === b.id}
                                   registerRef={(el) => {
                                     if (el) bookRefs.current.set(b.id, el);
@@ -446,6 +475,15 @@ export default function Library({ session }) {
           />
         )}
 
+        {editingBook && (
+          <AddBookModal
+            books={books}
+            editing={editingBook}
+            onClose={() => setEditingBook(null)}
+            onSave={handleEdit}
+          />
+        )}
+
         {showImport && (
           <ImportModal
             books={books}
@@ -454,6 +492,7 @@ export default function Library({ session }) {
             onSnackbar={setSnackbar}
           />
         )}
+
 
         {showSettings && (
           <Settings
@@ -476,13 +515,13 @@ export default function Library({ session }) {
   );
 }
 
-function BookCard({ book, onRemove, highlight, registerRef }) {
+function BookCard({ book, onRemove, onEdit, highlight, registerRef }) {
   return (
     <div
       ref={registerRef}
       className={`group relative bg-[#FBF6E9] border border-[#2A1F14]/10 rounded-lg p-3 spine-shadow hover:border-[#8B3A2A]/40 transition ${highlight ? "ml-highlight" : ""}`}
     >
-      <div className="display text-[15px] leading-snug pr-6">{book.title}</div>
+      <div className="display text-[15px] leading-snug pr-12">{book.title}</div>
       {book.seriesNumber != null && (
         <div className="text-[10px] uppercase tracking-wider text-[#6B5840] mt-1">#{book.seriesNumber}</div>
       )}
@@ -491,13 +530,26 @@ function BookCard({ book, onRemove, highlight, registerRef }) {
           with {book.additionalAuthors.join(", ")}
         </div>
       )}
-      <button
-        onClick={() => onRemove(book.id)}
-        className="absolute top-2 right-2 text-[#6B5840]/30 hover:text-[#8B3A2A] opacity-0 group-hover:opacity-100 transition"
-        aria-label="Remove"
-      >
-        <Trash2 size={13} />
-      </button>
+      <div className="absolute top-2 right-2 flex items-center gap-2 opacity-40 group-hover:opacity-100 transition">
+        {onEdit && (
+          <button
+            onClick={() => onEdit(book)}
+            className="text-[#6B5840]/40 hover:text-[#8B3A2A]"
+            aria-label="Edit"
+            title="Edit"
+          >
+            <Pencil size={13} />
+          </button>
+        )}
+        <button
+          onClick={() => onRemove(book.id)}
+          className="text-[#6B5840]/40 hover:text-[#8B3A2A]"
+          aria-label="Remove"
+          title="Remove"
+        >
+          <Trash2 size={13} />
+        </button>
+      </div>
     </div>
   );
 }

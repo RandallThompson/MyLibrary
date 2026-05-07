@@ -1,15 +1,10 @@
-// AddBookModal — v2 add flow with OpenLibrary autocomplete on Title.
+// AddBookModal — v2 add/edit flow with OpenLibrary autocomplete.
 //
-// Flow:
-//   - Title field → debounced 300ms OpenLibrary search (min 3 chars).
-//     Picking a suggestion fills Title, Author, Series, Series #.
-//     Plain manual entry still works if no suggestion clicked.
-//   - Author and Series are comboboxes seeded from existing library entries.
-//   - On Save, we compute the normalized identity key client-side and
-//     check IDB for an existing match. If found → "You already own this".
-//   - DB also enforces uniqueness via the books_user_normkey_unique index;
-//     dataStore.addBook() surfaces error.code = "duplicate" if the trigger
-//     produces the same key.
+// Pass `editing` to switch into edit mode. In edit mode:
+//   - Title shows "Edit book" instead of "Add a book".
+//   - Save button reads "Save changes".
+//   - Duplicate check skips the book being edited.
+//   - onSave receives { ...fields, id } so the caller can call updateBook.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Modal from "./Modal";
@@ -21,13 +16,15 @@ export default function AddBookModal({
   books,
   onClose,
   onSave,           // async (book) => savedBook
-  initial = {}     // { title, author, series, seriesNumber } — for prefill
+  initial = {},     // { title, author, series, seriesNumber } — for prefill
+  editing = null    // null | book object — switches to edit mode when set
 }) {
-  const [title, setTitle] = useState(initial.title || "");
-  const [author, setAuthor] = useState(initial.author || "");
-  const [series, setSeries] = useState(initial.series || "");
+  const seed = editing || initial;
+  const [title, setTitle] = useState(seed.title || "");
+  const [author, setAuthor] = useState(seed.author || "");
+  const [series, setSeries] = useState(seed.series || "");
   const [seriesNumber, setSeriesNumber] = useState(
-    initial.seriesNumber == null ? "" : String(initial.seriesNumber)
+    seed.seriesNumber == null ? "" : String(seed.seriesNumber)
   );
 
   const [olResults, setOlResults] = useState([]);
@@ -35,21 +32,26 @@ export default function AddBookModal({
   const [olOpen, setOlOpen] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [duplicate, setDuplicate] = useState(null); // existing book or null
+  const [duplicate, setDuplicate] = useState(null);
 
   const olAbortRef = useRef(null);
   const olTimerRef = useRef(null);
 
-  const authorOptions = useMemo(() => {
-    return Array.from(new Set(books.map(b => b.author).filter(Boolean))).sort();
-  }, [books]);
+  const isEdit = !!editing;
 
-  const seriesOptions = useMemo(() => {
-    return Array.from(new Set(books.map(b => b.series).filter(Boolean))).sort();
-  }, [books]);
+  const authorOptions = useMemo(
+    () => Array.from(new Set(books.map(b => b.author).filter(Boolean))).sort(),
+    [books]
+  );
+  const seriesOptions = useMemo(
+    () => Array.from(new Set(books.map(b => b.series).filter(Boolean))).sort(),
+    [books]
+  );
 
-  // Debounced OpenLibrary lookup keyed off Title.
+  // Debounced OpenLibrary lookup. Skipped in edit mode — autocomplete on
+  // already-saved books would be confusing.
   useEffect(() => {
+    if (isEdit) return;
     if (olAbortRef.current) olAbortRef.current.abort();
     if (olTimerRef.current) clearTimeout(olTimerRef.current);
     if (!title.trim() || title.trim().length < 3) {
@@ -70,19 +72,17 @@ export default function AddBookModal({
         })
         .finally(() => { if (!ctrl.signal.aborted) setOlLoading(false); });
     }, 300);
-    return () => {
-      if (olTimerRef.current) clearTimeout(olTimerRef.current);
-    };
-  }, [title]);
+    return () => { if (olTimerRef.current) clearTimeout(olTimerRef.current); };
+  }, [title, isEdit]);
 
-  // Live duplicate detection. Doesn't block the save button; just shows a hint.
+  // Live duplicate detection — skip the book being edited.
   useEffect(() => {
     setDuplicate(null);
     if (!title.trim() || !author.trim()) return;
     const key = normalizedKey(title, author);
-    const hit = books.find(b => b.normalizedKey === key);
+    const hit = books.find(b => b.normalizedKey === key && (!editing || b.id !== editing.id));
     if (hit) setDuplicate(hit);
-  }, [title, author, books]);
+  }, [title, author, books, editing]);
 
   const pickSuggestion = (s) => {
     setTitle(s.title || title);
@@ -104,12 +104,14 @@ export default function AddBookModal({
     }
     setBusy(true);
     try {
-      await onSave({
+      const payload = {
         title: title.trim(),
         author: author.trim(),
         series: series.trim() || null,
         seriesNumber: seriesNumber === "" ? null : parseFloat(seriesNumber)
-      });
+      };
+      if (isEdit) payload.id = editing.id;
+      await onSave(payload);
     } catch (e) {
       if (e.code === "duplicate") setError("You already own this book.");
       else if (e.code === "offline") setError("You're offline. Connect and try again.");
@@ -121,23 +123,23 @@ export default function AddBookModal({
   };
 
   return (
-    <Modal onClose={onClose} title="Add a book" size="md">
+    <Modal onClose={onClose} title={isEdit ? "Edit book" : "Add a book"} size="md">
       <div className="space-y-3">
-        {/* Title with OL autocomplete */}
+        {/* Title with OL autocomplete (add mode only) */}
         <label className="block relative">
           <span className="text-[11px] uppercase tracking-wider text-[#6B5840]">Title</span>
           <input
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            onFocus={() => olResults.length && setOlOpen(true)}
+            onFocus={() => !isEdit && olResults.length && setOlOpen(true)}
             autoFocus
             className="w-full mt-1 bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-md px-3 py-2 outline-none focus:border-[#8B3A2A] text-[15px]"
           />
-          {olOpen && olResults.length > 0 && (
+          {!isEdit && olOpen && olResults.length > 0 && (
             <div className="absolute left-0 right-0 mt-1 bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-md max-h-72 overflow-y-auto z-50 spine-shadow">
               <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-[#6B5840] border-b border-[#2A1F14]/10">
-                OpenLibrary {olLoading ? "…" : ""}
+                OpenLibrary {olLoading ? "..." : ""}
               </div>
               <ul>
                 {olResults.map((r, i) => (
@@ -202,7 +204,7 @@ export default function AddBookModal({
             disabled={busy || !title.trim() || !author.trim() || !!duplicate}
             className="bg-[#2A1F14] text-[#F4EBD9] px-4 py-2 rounded-full text-sm disabled:opacity-30 hover:bg-[#8B3A2A] transition"
           >
-            {busy ? "Saving…" : "Add to shelf"}
+            {busy ? "Saving..." : isEdit ? "Save changes" : "Add to shelf"}
           </button>
         </div>
       </div>
