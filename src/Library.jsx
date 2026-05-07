@@ -48,6 +48,7 @@ export default function Library({ session }) {
   const [editingBook, setEditingBook] = useState(null); // book object or null
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAbbyNote, setShowAbbyNote] = useState(false);
 
   const [snackbar, setSnackbar] = useState(null); // { message, action, durationMs, kind, payload }
   const [refreshing, setRefreshing] = useState(false);
@@ -298,6 +299,22 @@ export default function Library({ session }) {
           100% { box-shadow: 0 0 0 0 rgba(139,58,42, 0.0); }
         }
         .ml-highlight { animation: mlhighlight 1.6s ease-out; }
+        @keyframes wave {
+          0%, 60%, 100% { transform: rotate(0deg); }
+          10% { transform: rotate(14deg); }
+          20% { transform: rotate(-8deg); }
+          30% { transform: rotate(14deg); }
+          40% { transform: rotate(-4deg); }
+          50% { transform: rotate(10deg); }
+        }
+        .wave-emoji {
+          animation: wave 3s ease-in-out infinite;
+          transform-origin: 70% 70%;
+        }
+        @keyframes abbyFade { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes abbyPop  { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: scale(1); } }
+        .abby-fade { animation: abbyFade 250ms ease-out; }
+        .abby-pop  { animation: abbyPop 320ms cubic-bezier(0.34, 1.3, 0.64, 1); }
       `}</style>
 
       <div className="paper relative">
@@ -309,6 +326,14 @@ export default function Library({ session }) {
               <span className="text-xs uppercase tracking-[0.22em] text-[#6B5840]">Personal Library</span>
             </div>
             <div className="flex items-center gap-3 text-[11px] uppercase tracking-wider text-[#6B5840]">
+              <button
+                onClick={() => setShowAbbyNote(true)}
+                className="flex items-center gap-1.5 hover:text-[#8B3A2A] transition normal-case tracking-normal"
+                aria-label="A note for Abby"
+              >
+                <span className="wave-emoji inline-block text-base leading-none">👋</span>
+                <span className="text-[11px] uppercase tracking-wider">For Abby</span>
+              </button>
               {!online && <span className="text-[#8B3A2A]">offline</span>}
               <button
                 onClick={doRefresh}
@@ -504,6 +529,8 @@ export default function Library({ session }) {
             onOpenImport={() => setShowImport(true)}
           />
         )}
+
+        {showAbbyNote && <AbbyNote onClose={() => setShowAbbyNote(false)} />}
       </div>
 
       <Snackbar
@@ -511,6 +538,35 @@ export default function Library({ session }) {
         onAction={onSnackbarAction}
         onDismiss={() => setSnackbar(null)}
       />
+    </div>
+  );
+}
+
+// A small, hidden surprise. No DB writes, no analytics — a private moment.
+function AbbyNote({ onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2A1F14]/40 backdrop-blur-sm abby-fade"
+      onClick={onClose}
+      role="dialog"
+      aria-label="A note for Abby"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative bg-[#F4EBD9] border border-[#2A1F14]/15 rounded-2xl max-w-sm w-full p-10 spine-shadow text-center abby-pop"
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 text-[#6B5840]/50 hover:text-[#2A1F14] transition"
+          aria-label="Close"
+        >
+          <X size={18} />
+        </button>
+        <div className="display text-3xl sm:text-4xl text-[#2A1F14] leading-tight">
+          I love you, Beautiful!
+        </div>
+        <div className="text-2xl text-[#8B3A2A]/70 mt-5" aria-hidden="true">♡</div>
+      </div>
     </div>
   );
 }
