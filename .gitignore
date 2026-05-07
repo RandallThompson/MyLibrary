@@ -5,3 +5,5 @@ dev-dist
 .env*.local
 .DS_Store
 .vscode
+vite.config.js.timestamp-*
+*.local

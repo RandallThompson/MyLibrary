@@ -9,8 +9,8 @@ export default defineConfig({
       registerType: "autoUpdate",
       includeAssets: ["favicon.svg", "apple-touch-icon.png"],
       manifest: {
-        name: "The Shelf",
-        short_name: "Shelf",
+        name: "MyLibrary",
+        short_name: "MyLibrary",
         description: "A personal library, quietly.",
         theme_color: "#2A1F14",
         background_color: "#F4EBD9",
@@ -24,8 +24,6 @@ export default defineConfig({
         ]
       },
       workbox: {
-        // Cache the app shell so offline still loads the UI.
-        // Books still require network — they live in Supabase.
         globPatterns: ["**/*.{js,css,html,svg,png,ico,woff2}"]
       }
     })

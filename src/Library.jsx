@@ -1,90 +1,37 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+// Library.jsx v2 — main view.
+//
+// Notable changes vs v1:
+//   - All reads come from IDB (via dataStore.getAllBooks). On mount we sync
+//     from Supabase (if online) and replace the IDB cache.
+//   - Search is delegated to <SearchBar>, which renders a live dropdown.
+//     Picking a result scrolls to and expands that book.
+//   - Add flow goes through <AddBookModal> (OpenLibrary autocomplete).
+//   - Import goes through <ImportModal> (snapshot + fuzzy review + 10-min undo).
+//   - Removal triggers a "Removed Title — Undo" snackbar with 5s undo.
+//   - Settings reachable from the search bar — sign-out, export, wipe.
+//   - Series intelligence: best-effort OpenLibrary lookup on save populates
+//     series_known_total; gap detection respects the cached total when present.
+//   - Pull-to-refresh on touch devices triggers a re-sync.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Search, Plus, Upload, X, Trash2, BookOpen,
-  ChevronDown, ChevronRight, AlertTriangle, Library as LibraryIcon, LogOut
+  Plus, BookOpen, ChevronDown, ChevronRight, AlertTriangle,
+  Library as LibraryIcon, Trash2, RefreshCw, Settings as SettingsIcon, Upload
 } from "lucide-react";
-import { supabase } from "./supabaseClient";
+import {
+  syncFromServer, getAllBooks, addBook as dsAddBook,
+  removeBook as dsRemoveBook, restoreBook, bulkAdd, takeSnapshot,
+  getActiveSnapshot, restoreFromSnapshot, updateBook
+} from "./db/dataStore";
+import { lookupSeriesTotal } from "./lib/openlibrary";
+import { buildAuthorView, libraryStats, authorSortKey } from "./lib/series";
+import { searchBooks } from "./components/SearchBar";
 
-// ---------- Helpers ----------
-
-// Goodreads titles often look like: "A Court of Frost and Starlight (A Court of Thorns and Roses, #3.1)"
-function parseTitle(raw) {
-  const m = raw.match(/^(.+?)\s*\((.+?),\s*#(\d+(?:\.\d+)?)\)\s*$/);
-  if (m) return { title: m[1].trim(), series: m[2].trim(), seriesNumber: parseFloat(m[3]) };
-  return { title: raw.trim(), series: null, seriesNumber: null };
-}
-
-// Robust CSV parser that handles quoted fields, escaped quotes, and embedded newlines
-function parseCSV(text) {
-  const rows = [];
-  let row = [], field = "", inQ = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQ) {
-      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
-      else if (c === '"') inQ = false;
-      else field += c;
-    } else {
-      if (c === '"') inQ = true;
-      else if (c === ",") { row.push(field); field = ""; }
-      else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
-      else if (c !== "\r") field += c;
-    }
-  }
-  if (field.length || row.length) { row.push(field); rows.push(row); }
-  return rows;
-}
-
-// Goodreads CSV → array of book rows ready for Supabase insert (shape uses snake_case)
-function importGoodreads(text, userId) {
-  const rows = parseCSV(text);
-  if (!rows.length) return [];
-  const headers = rows[0].map(h => h.trim());
-  const ti = headers.indexOf("Title");
-  const ai = headers.indexOf("Author");
-  const oi = headers.indexOf("Owned Copies");
-  const si = headers.indexOf("Exclusive Shelf");
-  if (ti < 0 || ai < 0) throw new Error("Not a Goodreads export");
-  const books = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r[ti]) continue;
-    const parsed = parseTitle(r[ti]);
-    const owned = oi >= 0 ? parseInt(r[oi]) || 0 : 0;
-    const shelf = si >= 0 ? r[si] : "";
-    // If user marked Owned Copies, use it. Otherwise default to 1 (they're importing their library).
-    const copies = owned > 0 ? owned : 1;
-    for (let c = 0; c < copies; c++) {
-      books.push({
-        user_id: userId,
-        title: parsed.title,
-        author: r[ai] || "Unknown",
-        series: parsed.series,
-        series_number: parsed.seriesNumber,
-        shelf: shelf || null
-      });
-    }
-  }
-  return books;
-}
-
-// DB row (snake_case) → JS shape (camelCase) used throughout the UI
-const fromDb = (r) => ({
-  id: r.id,
-  title: r.title,
-  author: r.author,
-  series: r.series,
-  seriesNumber: r.series_number,
-  shelf: r.shelf
-});
-
-// Sort authors by last word (rough last-name proxy)
-function authorSortKey(name) {
-  const parts = name.trim().split(/\s+/);
-  return (parts[parts.length - 1] || name).toLowerCase();
-}
-
-// ---------- Component ----------
+import SearchBar from "./components/SearchBar";
+import AddBookModal from "./components/AddBookModal";
+import ImportModal from "./components/ImportModal";
+import Settings from "./components/Settings";
+import Snackbar from "./components/Snackbar";
 
 export default function Library({ session }) {
   const userId = session.user.id;
@@ -92,113 +39,169 @@ export default function Library({ session }) {
 
   const [books, setBooks] = useState([]);
   const [loaded, setLoaded] = useState(false);
+  const [online, setOnline] = useState(navigator.onLine);
   const [q, setQ] = useState("");
   const [openAuthors, setOpenAuthors] = useState(new Set());
+  const [highlightedId, setHighlightedId] = useState(null);
+
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  const [importMsg, setImportMsg] = useState("");
-  const fileRef = useRef(null);
+  const [showSettings, setShowSettings] = useState(false);
 
-  const [tT, setT] = useState("");
-  const [tA, setA] = useState("");
-  const [tS, setS] = useState("");
-  const [tN, setN] = useState("");
+  const [snackbar, setSnackbar] = useState(null); // { message, action, durationMs, kind, payload }
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Load all books for the signed-in user. RLS guarantees we only see our own.
+  const bookRefs = useRef(new Map());
+
+  // ---------- Loading: sync from Supabase, then read IDB ----------
+  const loadAll = useCallback(async ({ remote = true } = {}) => {
+    if (remote && navigator.onLine) {
+      const r = await syncFromServer({ force: true });
+      if (!r.ok && r.reason !== "offline") {
+        console.error("sync failed:", r.reason);
+      }
+    }
+    const all = await getAllBooks();
+    setBooks(all);
+    setLoaded(true);
+  }, []);
+
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const { data, error } = await supabase
-        .from("books")
-        .select("*")
-        .order("created_at", { ascending: true });
-      if (!cancelled) {
-        if (error) console.error(error);
-        setBooks((data || []).map(fromDb));
-        setLoaded(true);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [userId]);
+    loadAll();
+  }, [loadAll]);
 
-  const addBook = async () => {
-    if (!tT.trim() || !tA.trim()) return;
-    const payload = {
-      user_id: userId,
-      title: tT.trim(),
-      author: tA.trim(),
-      series: tS.trim() || null,
-      series_number: tN ? parseFloat(tN) : null
+  // online/offline listeners
+  useEffect(() => {
+    const goOn = () => { setOnline(true); loadAll({ remote: true }); };
+    const goOff = () => setOnline(false);
+    window.addEventListener("online", goOn);
+    window.addEventListener("offline", goOff);
+    return () => {
+      window.removeEventListener("online", goOn);
+      window.removeEventListener("offline", goOff);
     };
-    const { data, error } = await supabase
-      .from("books")
-      .insert(payload)
-      .select()
-      .single();
-    if (error) {
-      console.error(error);
-      alert("Couldn't save: " + error.message);
-      return;
-    }
-    setBooks((prev) => [...prev, fromDb(data)]);
-    setT(""); setA(""); setS(""); setN("");
+  }, [loadAll]);
+
+  // ---------- Pull-to-refresh ----------
+  // Lightweight: detect touchstart at scrollTop 0, drag down >70px, release → sync.
+  useEffect(() => {
+    let startY = null;
+    const onStart = (e) => {
+      if (window.scrollY > 0) return;
+      startY = e.touches[0].clientY;
+    };
+    const onEnd = (e) => {
+      if (startY == null) return;
+      const dy = (e.changedTouches[0].clientY) - startY;
+      startY = null;
+      if (dy > 70) doRefresh();
+    };
+    window.addEventListener("touchstart", onStart, { passive: true });
+    window.addEventListener("touchend", onEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onStart);
+      window.removeEventListener("touchend", onEnd);
+    };
+  }, []);
+
+  const doRefresh = async () => {
+    setRefreshing(true);
+    await loadAll({ remote: true });
+    setRefreshing(false);
+  };
+
+  // ---------- Add ----------
+  const handleAdd = async (input) => {
+    const saved = await dsAddBook(input, userId);
+    setBooks(prev => [...prev, saved]);
     setShowAdd(false);
-  };
-
-  const removeBook = async (id) => {
-    const prev = books;
-    setBooks(prev.filter(b => b.id !== id)); // optimistic
-    const { error } = await supabase.from("books").delete().eq("id", id);
-    if (error) {
-      console.error(error);
-      setBooks(prev); // rollback
-      alert("Couldn't delete: " + error.message);
+    // Best-effort series total in the background.
+    if (saved.series && online) {
+      lookupSeriesTotal({ author: saved.author, series: saved.series })
+        .then(total => {
+          if (total) {
+            updateBook(saved.id, {
+              ...saved,
+              seriesKnownTotal: total,
+              seriesKnownTotalRefreshedAt: new Date().toISOString()
+            }).then(updated => {
+              setBooks(prev => prev.map(b => b.id === updated.id ? updated : b));
+            }).catch(() => {});
+          }
+        })
+        .catch(() => {});
     }
   };
 
-  const handleFile = async (file) => {
-    if (!file) return;
-    setImportMsg("Reading…");
-    try {
-      const text = await file.text();
-      const rows = importGoodreads(text, userId);
-      if (!rows.length) { setImportMsg("Nothing to import."); return; }
+  // ---------- Remove (with undo) ----------
+  const handleRemove = async (id) => {
+    const removed = await dsRemoveBook(id);
+    setBooks(prev => prev.filter(b => b.id !== id));
+    setSnackbar({
+      message: `Removed ${removed.title}`,
+      action: "Undo",
+      durationMs: 5000,
+      kind: "delete-undo",
+      payload: removed
+    });
+  };
 
-      // Insert in chunks of 500 — Supabase happily accepts bulk inserts.
-      const chunkSize = 500;
-      const inserted = [];
-      for (let i = 0; i < rows.length; i += chunkSize) {
-        const chunk = rows.slice(i, i + chunkSize);
-        setImportMsg(`Importing ${i + chunk.length} of ${rows.length}…`);
-        const { data, error } = await supabase
-          .from("books")
-          .insert(chunk)
-          .select();
-        if (error) throw error;
-        inserted.push(...(data || []));
+  // ---------- Snackbar action handlers ----------
+  const onSnackbarAction = async (sb) => {
+    if (sb.kind === "delete-undo" && sb.payload) {
+      try {
+        const restored = await restoreBook(sb.payload);
+        setBooks(prev => [...prev, restored]);
+      } catch (e) {
+        console.error(e);
       }
-      setBooks((prev) => [...prev, ...inserted.map(fromDb)]);
-      setImportMsg(`Imported ${inserted.length} entries.`);
-      setTimeout(() => { setShowImport(false); setImportMsg(""); }, 1400);
-    } catch (e) {
-      console.error(e);
-      setImportMsg(`Couldn't parse: ${e.message}`);
+    } else if (sb.kind === "import-undo") {
+      try {
+        const snap = await getActiveSnapshot();
+        if (!snap) {
+          alert("Snapshot expired (older than 10 minutes).");
+        } else {
+          await restoreFromSnapshot(snap.id, userId);
+          await loadAll({ remote: false });
+        }
+      } catch (e) {
+        console.error(e);
+        alert("Couldn't undo: " + (e.message || "unknown error"));
+      }
     }
+    setSnackbar(null);
   };
 
-  const signOut = async () => {
-    await supabase.auth.signOut();
+  // ---------- Import ----------
+  const handleImport = async (rows) => {
+    await takeSnapshot("import"); // for undo
+    const inserted = await bulkAdd(rows, userId);
+    setBooks(prev => [...prev, ...inserted]);
+    return inserted.length;
   };
 
-  // Filtered + grouped
+  // ---------- Search → scroll to result ----------
+  const onSelectFromSearch = (book) => {
+    // Make sure the author is open.
+    setOpenAuthors(prev => {
+      const next = new Set(prev);
+      next.add(book.author);
+      return next;
+    });
+    setHighlightedId(book.id);
+    // Wait a tick so the section can mount/expand.
+    setTimeout(() => {
+      const el = bookRefs.current.get(book.id);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      setTimeout(() => setHighlightedId(null), 1800);
+    }, 50);
+  };
+
+  // ---------- Filtered + grouped (uses same search routine for parity) ----------
   const filtered = useMemo(() => {
     if (!q.trim()) return books;
-    const s = q.toLowerCase();
-    return books.filter(b =>
-      b.title.toLowerCase().includes(s) ||
-      b.author.toLowerCase().includes(s) ||
-      (b.series && b.series.toLowerCase().includes(s))
-    );
+    const matches = searchBooks(books, q);
+    return matches;
   }, [books, q]);
 
   const grouped = useMemo(() => {
@@ -211,10 +214,11 @@ export default function Library({ session }) {
       .sort((a, b) => authorSortKey(a[0]).localeCompare(authorSortKey(b[0])));
   }, [filtered]);
 
-  // When searching, auto-open all matching authors
   useEffect(() => {
     if (q.trim()) setOpenAuthors(new Set(grouped.map(([a]) => a)));
   }, [q, grouped]);
+
+  const stats = useMemo(() => libraryStats(books), [books]);
 
   const toggleAuthor = (a) => {
     setOpenAuthors(prev => {
@@ -224,50 +228,27 @@ export default function Library({ session }) {
     });
   };
 
-  // Build series view for one author
-  const authorView = (authorBooks) => {
-    const seriesMap = new Map();
-    const standalones = [];
-    authorBooks.forEach(b => {
-      if (b.series) {
-        if (!seriesMap.has(b.series)) seriesMap.set(b.series, []);
-        seriesMap.get(b.series).push(b);
-      } else standalones.push(b);
+  const refreshSeriesTotal = async (book) => {
+    const total = await lookupSeriesTotal({
+      author: book.author, series: book.series, workKey: book.openlibraryWorkKey
     });
-    const series = Array.from(seriesMap.entries()).map(([name, list]) => {
-      const numbered = list.filter(b => b.seriesNumber != null).sort((a, b) => a.seriesNumber - b.seriesNumber);
-      const unnumbered = list.filter(b => b.seriesNumber == null);
-      let gaps = [];
-      if (numbered.length > 1) {
-        const min = Math.floor(numbered[0].seriesNumber);
-        const max = Math.ceil(numbered[numbered.length - 1].seriesNumber);
-        const have = new Set(numbered.map(b => Math.floor(b.seriesNumber)));
-        for (let n = min; n <= max; n++) if (!have.has(n)) gaps.push(n);
+    if (total) {
+      // Update every owned book in this (author, series).
+      const sibs = books.filter(b => b.author === book.author && b.series === book.series);
+      for (const s of sibs) {
+        try {
+          const updated = await updateBook(s.id, {
+            ...s,
+            seriesKnownTotal: total,
+            seriesKnownTotalRefreshedAt: new Date().toISOString()
+          });
+          setBooks(prev => prev.map(b => b.id === updated.id ? updated : b));
+        } catch (e) { /* ignore individual failures */ }
       }
-      return { name, list: [...numbered, ...unnumbered], gaps };
-    });
-    return { series, standalones: standalones.sort((a, b) => a.title.localeCompare(b.title)) };
+    } else {
+      alert("OpenLibrary couldn't determine the size of this series.");
+    }
   };
-
-  // Stats
-  const stats = useMemo(() => {
-    const titles = books.length;
-    const authors = new Set(books.map(b => b.author)).size;
-    const seriesSet = new Set(books.filter(b => b.series).map(b => b.author + "::" + b.series));
-    let gappy = 0;
-    seriesSet.forEach(key => {
-      const [au, sr] = key.split("::");
-      const list = books.filter(b => b.author === au && b.series === sr && b.seriesNumber != null)
-        .sort((a, b) => a.seriesNumber - b.seriesNumber);
-      if (list.length > 1) {
-        const have = new Set(list.map(b => Math.floor(b.seriesNumber)));
-        for (let n = Math.floor(list[0].seriesNumber); n <= Math.ceil(list[list.length - 1].seriesNumber); n++) {
-          if (!have.has(n)) { gappy++; break; }
-        }
-      }
-    });
-    return { titles, authors, series: seriesSet.size, gappy };
-  }, [books]);
 
   if (!loaded) {
     return <div className="min-h-screen flex items-center justify-center bg-[#F4EBD9] text-[#2A1F14]">Opening the shelf…</div>;
@@ -282,9 +263,14 @@ export default function Library({ session }) {
         .display { font-family: 'Fraunces', Georgia, serif; font-variation-settings: 'SOFT' 50, 'WONK' 0; letter-spacing: -0.01em; }
         .display-soft { font-family: 'Fraunces', Georgia, serif; font-variation-settings: 'SOFT' 100, 'WONK' 1; }
         .paper { background-image: radial-gradient(circle at 25% 15%, rgba(139,58,42,0.04) 0, transparent 35%), radial-gradient(circle at 80% 80%, rgba(43,31,20,0.05) 0, transparent 40%); }
-        .grain::before { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.06; mix-blend-mode: multiply; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
         .spine-shadow { box-shadow: 0 1px 0 rgba(43,31,20,0.04), 0 8px 20px -16px rgba(43,31,20,0.18); }
         .gap-card { background: repeating-linear-gradient(45deg, rgba(199,125,63,0.08) 0 6px, transparent 6px 12px); }
+        @keyframes mlhighlight {
+          0% { box-shadow: 0 0 0 0 rgba(139,58,42, 0.0); }
+          30% { box-shadow: 0 0 0 4px rgba(139,58,42, 0.45); }
+          100% { box-shadow: 0 0 0 0 rgba(139,58,42, 0.0); }
+        }
+        .ml-highlight { animation: mlhighlight 1.6s ease-out; }
       `}</style>
 
       <div className="paper relative">
@@ -295,53 +281,36 @@ export default function Library({ session }) {
               <LibraryIcon size={22} className="text-[#8B3A2A]" />
               <span className="text-xs uppercase tracking-[0.22em] text-[#6B5840]">Personal Library</span>
             </div>
-            <button
-              onClick={signOut}
-              className="text-[11px] uppercase tracking-wider text-[#6B5840] hover:text-[#8B3A2A] flex items-center gap-1"
-              title={userEmail}
-            >
-              <LogOut size={12} /> Sign out
-            </button>
+            <div className="flex items-center gap-3 text-[11px] uppercase tracking-wider text-[#6B5840]">
+              {!online && <span className="text-[#8B3A2A]">offline</span>}
+              <button
+                onClick={doRefresh}
+                disabled={refreshing}
+                className="hover:text-[#8B3A2A] flex items-center gap-1 disabled:opacity-40"
+                title="Refresh from server"
+              >
+                <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
+              </button>
+              <button onClick={() => setShowSettings(true)} className="hover:text-[#8B3A2A]">
+                <SettingsIcon size={14} />
+              </button>
+            </div>
           </div>
-          <h1 className="display text-4xl sm:text-5xl font-semibold">The Shelf</h1>
+          <h1 className="display text-4xl sm:text-5xl font-semibold">MyLibrary</h1>
           <p className="display-soft text-[#6B5840] mt-1 italic">Search before you buy. See what's missing.</p>
         </header>
 
         {/* Search */}
-        <div className="sticky top-0 z-20 bg-[#F4EBD9]/85 backdrop-blur-md border-b border-[#2A1F14]/10">
-          <div className="max-w-3xl mx-auto px-5 py-3">
-            <div className="flex items-center gap-2 bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-full px-4 py-2.5 spine-shadow">
-              <Search size={18} className="text-[#6B5840] shrink-0" />
-              <input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="title, author, or series…"
-                className="bg-transparent flex-1 outline-none placeholder:text-[#6B5840]/60 text-[15px]"
-              />
-              {q && <button onClick={() => setQ("")} className="text-[#6B5840] hover:text-[#8B3A2A]"><X size={16} /></button>}
-            </div>
-            <div className="flex items-center justify-between mt-2 text-xs text-[#6B5840]">
-              <div className="flex gap-3">
-                <span><span className="font-semibold text-[#2A1F14]">{stats.titles}</span> books</span>
-                <span><span className="font-semibold text-[#2A1F14]">{stats.authors}</span> authors</span>
-                <span><span className="font-semibold text-[#2A1F14]">{stats.series}</span> series</span>
-                {stats.gappy > 0 && (
-                  <span className="text-[#8B3A2A] flex items-center gap-1">
-                    <AlertTriangle size={12} /> {stats.gappy} with gaps
-                  </span>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <button onClick={() => setShowImport(true)} className="hover:text-[#8B3A2A] flex items-center gap-1">
-                  <Upload size={12} /> Import
-                </button>
-                <button onClick={() => setShowAdd(true)} className="hover:text-[#8B3A2A] flex items-center gap-1">
-                  <Plus size={12} /> Add
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <SearchBar
+          books={books}
+          q={q}
+          setQ={setQ}
+          onSelect={onSelectFromSearch}
+          stats={stats}
+          onOpenImport={() => setShowImport(true)}
+          onOpenAdd={() => setShowAdd(true)}
+          onOpenSettings={() => setShowSettings(true)}
+        />
 
         {/* Body */}
         <main className="max-w-3xl mx-auto px-5 py-6 pb-32">
@@ -365,7 +334,7 @@ export default function Library({ session }) {
             <div className="divide-y divide-[#2A1F14]/10">
               {grouped.map(([author, list]) => {
                 const open = openAuthors.has(author);
-                const view = authorView(list);
+                const view = buildAuthorView(list);
                 const hasGaps = view.series.some(s => s.gaps.length > 0);
                 return (
                   <section key={author} className="py-4">
@@ -386,16 +355,39 @@ export default function Library({ session }) {
                       <div className="mt-4 space-y-5 pl-6">
                         {view.series.map(s => (
                           <div key={s.name}>
-                            <div className="flex items-baseline justify-between mb-2">
-                              <h3 className="display-soft italic text-[#6B5840]">{s.name}</h3>
-                              {s.gaps.length > 0 && (
-                                <span className="text-[10px] uppercase tracking-wider text-[#8B3A2A]">
-                                  missing #{s.gaps.join(", ")}
-                                </span>
-                              )}
+                            <div className="flex items-baseline justify-between mb-2 gap-2">
+                              <h3 className="display-soft italic text-[#6B5840]">
+                                {s.name}
+                                {s.knownTotal ? <span className="text-[10px] uppercase tracking-wider ml-2 text-[#6B5840]/70">of {s.knownTotal}</span> : null}
+                              </h3>
+                              <div className="flex items-baseline gap-2">
+                                {s.gaps.length > 0 && (
+                                  <span className="text-[10px] uppercase tracking-wider text-[#8B3A2A]">
+                                    missing #{s.gaps.join(", ")}
+                                  </span>
+                                )}
+                                <button
+                                  onClick={() => refreshSeriesTotal(s.list[0])}
+                                  className="text-[10px] uppercase tracking-wider text-[#6B5840]/70 hover:text-[#8B3A2A]"
+                                  title="Re-check OpenLibrary for series size"
+                                >
+                                  refresh
+                                </button>
+                              </div>
                             </div>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              {s.list.map(b => <BookCard key={b.id} book={b} onRemove={removeBook} />)}
+                              {s.list.map(b => (
+                                <BookCard
+                                  key={b.id}
+                                  book={b}
+                                  onRemove={handleRemove}
+                                  highlight={highlightedId === b.id}
+                                  registerRef={(el) => {
+                                    if (el) bookRefs.current.set(b.id, el);
+                                    else bookRefs.current.delete(b.id);
+                                  }}
+                                />
+                              ))}
                               {s.gaps.map(n => (
                                 <div key={`gap-${s.name}-${n}`} className="gap-card border border-dashed border-[#8B3A2A]/40 rounded-lg p-3 text-[#8B3A2A]/80">
                                   <div className="text-[10px] uppercase tracking-wider mb-1">missing</div>
@@ -409,7 +401,18 @@ export default function Library({ session }) {
                           <div>
                             {view.series.length > 0 && <h3 className="display-soft italic text-[#6B5840] mb-2">Standalone</h3>}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              {view.standalones.map(b => <BookCard key={b.id} book={b} onRemove={removeBook} />)}
+                              {view.standalones.map(b => (
+                                <BookCard
+                                  key={b.id}
+                                  book={b}
+                                  onRemove={handleRemove}
+                                  highlight={highlightedId === b.id}
+                                  registerRef={(el) => {
+                                    if (el) bookRefs.current.set(b.id, el);
+                                    else bookRefs.current.delete(b.id);
+                                  }}
+                                />
+                              ))}
                             </div>
                           </div>
                         )}
@@ -422,7 +425,7 @@ export default function Library({ session }) {
           )}
         </main>
 
-        {/* Floating actions */}
+        {/* Floating action */}
         {!empty && (
           <div className="fixed bottom-5 right-5 flex flex-col gap-2 z-30">
             <button
@@ -435,63 +438,58 @@ export default function Library({ session }) {
           </div>
         )}
 
-        {/* Add modal */}
         {showAdd && (
-          <Modal onClose={() => setShowAdd(false)} title="Add a book">
-            <div className="space-y-3">
-              <Field label="Title" value={tT} onChange={setT} autoFocus />
-              <Field label="Author" value={tA} onChange={setA} />
-              <div className="grid grid-cols-3 gap-2">
-                <div className="col-span-2"><Field label="Series (optional)" value={tS} onChange={setS} /></div>
-                <Field label="#" value={tN} onChange={setN} type="number" />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button onClick={() => setShowAdd(false)} className="px-4 py-2 text-sm text-[#6B5840] hover:text-[#2A1F14]">Cancel</button>
-                <button onClick={addBook} disabled={!tT.trim() || !tA.trim()} className="bg-[#2A1F14] text-[#F4EBD9] px-4 py-2 rounded-full text-sm disabled:opacity-30 hover:bg-[#8B3A2A] transition">
-                  Add to shelf
-                </button>
-              </div>
-            </div>
-          </Modal>
+          <AddBookModal
+            books={books}
+            onClose={() => setShowAdd(false)}
+            onSave={handleAdd}
+          />
         )}
 
-        {/* Import modal */}
         {showImport && (
-          <Modal onClose={() => setShowImport(false)} title="Import from Goodreads">
-            <p className="text-sm text-[#6B5840] mb-4">
-              On Goodreads: <span className="display-soft italic">My Books → Import and export → Export Library</span>. Drop the CSV here.
-            </p>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".csv,text/csv"
-              onChange={(e) => handleFile(e.target.files?.[0])}
-              className="hidden"
-            />
-            <button
-              onClick={() => fileRef.current?.click()}
-              className="w-full border-2 border-dashed border-[#2A1F14]/30 rounded-lg p-6 text-center hover:border-[#8B3A2A] hover:bg-[#FBF6E9] transition"
-            >
-              <Upload size={22} className="mx-auto mb-2 text-[#6B5840]" />
-              <div className="text-sm text-[#2A1F14]">Choose goodreads_library_export.csv</div>
-            </button>
-            {importMsg && <p className="text-sm mt-3 text-center text-[#8B3A2A]">{importMsg}</p>}
-            <p className="text-xs text-[#6B5840] mt-4">
-              Series names are pulled from titles like <em>Title (Series, #2)</em>. Owned Copies count is honored — three copies of <em>Frost and Starlight</em> stay as three.
-            </p>
-          </Modal>
+          <ImportModal
+            books={books}
+            onClose={() => setShowImport(false)}
+            onImport={handleImport}
+            onSnackbar={setSnackbar}
+          />
+        )}
+
+        {showSettings && (
+          <Settings
+            books={books}
+            userId={userId}
+            userEmail={userEmail}
+            onClose={() => setShowSettings(false)}
+            onWipeDone={() => loadAll({ remote: false })}
+            onOpenImport={() => setShowImport(true)}
+          />
         )}
       </div>
+
+      <Snackbar
+        snackbar={snackbar}
+        onAction={onSnackbarAction}
+        onDismiss={() => setSnackbar(null)}
+      />
     </div>
   );
 }
 
-function BookCard({ book, onRemove }) {
+function BookCard({ book, onRemove, highlight, registerRef }) {
   return (
-    <div className="group relative bg-[#FBF6E9] border border-[#2A1F14]/10 rounded-lg p-3 spine-shadow hover:border-[#8B3A2A]/40 transition">
+    <div
+      ref={registerRef}
+      className={`group relative bg-[#FBF6E9] border border-[#2A1F14]/10 rounded-lg p-3 spine-shadow hover:border-[#8B3A2A]/40 transition ${highlight ? "ml-highlight" : ""}`}
+    >
       <div className="display text-[15px] leading-snug pr-6">{book.title}</div>
       {book.seriesNumber != null && (
         <div className="text-[10px] uppercase tracking-wider text-[#6B5840] mt-1">#{book.seriesNumber}</div>
+      )}
+      {book.additionalAuthors && book.additionalAuthors.length > 0 && (
+        <div className="text-[10px] text-[#6B5840] mt-1 italic truncate">
+          with {book.additionalAuthors.join(", ")}
+        </div>
       )}
       <button
         onClick={() => onRemove(book.id)}
@@ -500,35 +498,6 @@ function BookCard({ book, onRemove }) {
       >
         <Trash2 size={13} />
       </button>
-    </div>
-  );
-}
-
-function Field({ label, value, onChange, type = "text", autoFocus }) {
-  return (
-    <label className="block">
-      <span className="text-[11px] uppercase tracking-wider text-[#6B5840]">{label}</span>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        autoFocus={autoFocus}
-        className="w-full mt-1 bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-md px-3 py-2 outline-none focus:border-[#8B3A2A] text-[15px]"
-      />
-    </label>
-  );
-}
-
-function Modal({ onClose, title, children }) {
-  return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center p-4 bg-[#2A1F14]/40 backdrop-blur-sm" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="bg-[#F4EBD9] border border-[#2A1F14]/15 rounded-2xl max-w-md w-full p-6 spine-shadow">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="display text-xl">{title}</h2>
-          <button onClick={onClose} className="text-[#6B5840] hover:text-[#2A1F14]"><X size={18} /></button>
-        </div>
-        {children}
-      </div>
     </div>
   );
 }

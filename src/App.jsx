@@ -21,7 +21,7 @@ export default function App() {
   if (!ready) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#F4EBD9] text-[#2A1F14]">
-        Opening the shelf…
+        Opening MyLibrary…
       </div>
     );
   }
