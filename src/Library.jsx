@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, BookOpen, ChevronDown, ChevronRight, AlertTriangle,
-  Library as LibraryIcon, Trash2, RefreshCw, Settings as SettingsIcon, Upload, Pencil
+  Library as LibraryIcon, Trash2, RefreshCw, Settings as SettingsIcon, Upload, Pencil, LayoutGrid
 } from "lucide-react";
 import {
   syncFromServer, getAllBooks, addBook as dsAddBook,
@@ -32,6 +32,7 @@ import AddBookModal from "./components/AddBookModal";
 import ImportModal from "./components/ImportModal";
 import Settings from "./components/Settings";
 import Snackbar from "./components/Snackbar";
+import Designer from "./components/designer/Designer";
 
 export default function Library({ session }) {
   const userId = session.user.id;
@@ -49,6 +50,7 @@ export default function Library({ session }) {
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAbbyNote, setShowAbbyNote] = useState(false);
+  const [showDesigner, setShowDesigner] = useState(false);
 
   const [snackbar, setSnackbar] = useState(null); // { message, action, durationMs, kind, payload }
   const [refreshing, setRefreshing] = useState(false);
@@ -343,6 +345,9 @@ export default function Library({ session }) {
               >
                 <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} />
               </button>
+              <button onClick={() => setShowDesigner(true)} className="hover:text-[#8B3A2A]" title="Bookshelf designer">
+                <LayoutGrid size={14} />
+              </button>
               <button onClick={() => setShowSettings(true)} className="hover:text-[#8B3A2A]">
                 <SettingsIcon size={14} />
               </button>
@@ -531,6 +536,14 @@ export default function Library({ session }) {
         )}
 
         {showAbbyNote && <AbbyNote onClose={() => setShowAbbyNote(false)} />}
+
+        {showDesigner && (
+          <Designer
+            userId={userId}
+            userEmail={userEmail}
+            onClose={() => setShowDesigner(false)}
+          />
+        )}
       </div>
 
       <Snackbar

@@ -6,11 +6,12 @@
 import { useState } from "react";
 import { LogOut, Download, AlertTriangle, BookOpen } from "lucide-react";
 import Modal from "./Modal";
+import BookcaseManager from "./designer/BookcaseManager";
 import { downloadCSV } from "../lib/csvExport";
 import { wipeLibrary, clearLocal, syncFromServer } from "../db/dataStore";
 import { supabase } from "../supabaseClient";
 
-const APP_VERSION = "v2.0.0";
+const APP_VERSION = "v3.0.0";
 
 export default function Settings({
   books,
@@ -77,6 +78,8 @@ export default function Settings({
             </div>
           </button>
         </section>
+
+        <BookcaseManager userId={userId} />
 
         <section>
           <h3 className="text-[10px] uppercase tracking-wider text-[#6B5840] mb-2">Account</h3>

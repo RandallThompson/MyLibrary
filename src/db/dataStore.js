@@ -254,3 +254,73 @@ export async function ensureFresh() {
   if (!all.length || !lastSyncedAt) return syncFromServer();
   return { ok: true, skipped: true };
 }
+
+// =====================================================================
+// v3 designer extensions: bookcases, arrangements, prep_jobs reads.
+// We don't IDB-mirror these because they're not searched on the hot path —
+// reads go straight to Supabase.
+// =====================================================================
+
+export async function listBookcases(userId) {
+  const { data, error } = await supabase
+    .from("bookcases").select("*").eq("user_id", userId)
+    .order("position_order", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function createBookcase(userId, payload) {
+  requireOnline();
+  const { data, error } = await supabase
+    .from("bookcases")
+    .insert({ user_id: userId, ...payload })
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateBookcase(id, patch) {
+  requireOnline();
+  const { data, error } = await supabase
+    .from("bookcases").update(patch).eq("id", id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteBookcase(id) {
+  requireOnline();
+  const { error } = await supabase.from("bookcases").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function listArrangements(userId, bookcaseId) {
+  let q = supabase.from("arrangements").select("*").eq("user_id", userId);
+  if (bookcaseId) q = q.eq("bookcase_id", bookcaseId);
+  const { data, error } = await q.order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function saveArrangement(userId, payload) {
+  requireOnline();
+  const { data, error } = await supabase
+    .from("arrangements")
+    .insert({ user_id: userId, ...payload })
+    .select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteArrangement(id) {
+  requireOnline();
+  const { error } = await supabase.from("arrangements").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function getActivePrepJob(userId) {
+  const { data } = await supabase
+    .from("prep_jobs").select("*").eq("user_id", userId)
+    .order("started_at", { ascending: false }).limit(1).maybeSingle();
+  return data;
+}
