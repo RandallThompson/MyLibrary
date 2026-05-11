@@ -103,3 +103,88 @@ export async function fetchWork(workKey) {
     return null;
   }
 }
+
+// =====================================================================
+// Edition-level lookup for physical dimensions.
+// OpenLibrary's "Books API" returns publisher metadata including
+// physical_dimensions when present. Try by title+author as a proxy for the
+// edition; if no luck we fall through.
+// Docs: https://openlibrary.org/dev/docs/api/books
+//
+// Returns: { coverUrl, pageCount, binding, heightCm, spineThicknessCm } or null
+// =====================================================================
+
+const NUM = /([0-9]+(?:\.[0-9]+)?)/;
+
+function parseDimString(s) {
+  if (!s) return null;
+  const lower = String(s).toLowerCase();
+  const m = lower.match(NUM);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  if (lower.includes("inch") || lower.includes("in")) return Math.round(n * 2.54 * 10) / 10;
+  return Math.round(n * 10) / 10;
+}
+
+// Try to fetch edition metadata from OpenLibrary for a title+author pair.
+// OL doesn't have a "search by title+author and return edition" endpoint;
+// the closest is /search.json which returns work-level results. We then look
+// at the first work's `edition_key` and fetch /books/{key}.json which has
+// physical_format + physical_dimensions + number_of_pages.
+export async function fetchOpenLibraryEdition({ title, author }) {
+  if (!title) return null;
+  try {
+    const q = `title:"${title}"${author ? `+author:"${author}"` : ""}`;
+    const searchUrl = `${SEARCH_URL}?q=${encodeURIComponent(q)}&fields=edition_key,cover_i&limit=1`;
+    const r = await fetch(searchUrl);
+    if (!r.ok) return null;
+    const j = await r.json();
+    const doc = (j.docs || [])[0];
+    if (!doc) return null;
+
+    let coverUrl = null;
+    if (doc.cover_i) coverUrl = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
+
+    const editionKey = (doc.edition_key || [])[0];
+    if (!editionKey) return coverUrl ? { coverUrl } : null;
+
+    const eUrl = `https://openlibrary.org/books/${editionKey}.json`;
+    const er = await fetch(eUrl);
+    if (!er.ok) return coverUrl ? { coverUrl } : null;
+    const ed = await er.json();
+
+    // physical_dimensions like "8.4 x 5.4 x 1 inches" or "21 x 14 x 3 centimeters".
+    // We treat the largest as height, smallest as thickness.
+    let heightCm = null, spineThicknessCm = null;
+    if (ed.physical_dimensions) {
+      const parts = String(ed.physical_dimensions).split(/x|×/i).map(p => parseDimString(p.trim())).filter(Boolean);
+      if (parts.length >= 3) {
+        parts.sort((a, b) => b - a);
+        heightCm = parts[0];        // tallest
+        spineThicknessCm = parts[2]; // smallest = thickness
+      } else if (parts.length === 2) {
+        parts.sort((a, b) => b - a);
+        heightCm = parts[0];
+      } else if (parts.length === 1) {
+        heightCm = parts[0];
+      }
+    }
+
+    let binding = null;
+    const fmt = (ed.physical_format || "").toLowerCase();
+    if (fmt.includes("hard")) binding = "hardcover";
+    else if (fmt.includes("paper") || fmt.includes("soft")) binding = "paperback";
+    else if (fmt.includes("mass")) binding = "paperback"; // close enough
+
+    return {
+      coverUrl,
+      pageCount: ed.number_of_pages || null,
+      binding,
+      heightCm,
+      spineThicknessCm
+    };
+  } catch {
+    return null;
+  }
+}
