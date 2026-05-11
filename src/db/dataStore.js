@@ -324,3 +324,49 @@ export async function getActivePrepJob(userId) {
     .order("started_at", { ascending: false }).limit(1).maybeSingle();
   return data;
 }
+
+// =====================================================================
+// Real-time sync. Subscribes to postgres_changes on the books table for
+// the signed-in user; pipes inserts/updates/deletes into IDB and notifies
+// the caller so the UI can update.
+//
+// Returns an unsubscribe function. Call it on cleanup.
+// =====================================================================
+
+export function subscribeToBookChanges(userId, { onInsert, onUpdate, onDelete } = {}) {
+  if (!userId) return () => {};
+  const channel = supabase
+    .channel(`books-${userId}`)
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "books", filter: `user_id=eq.${userId}` },
+      async (payload) => {
+        const mapped = fromDb(payload.new);
+        await idb.books.put(mapped);
+        onInsert && onInsert(mapped);
+      }
+    )
+    .on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "books", filter: `user_id=eq.${userId}` },
+      async (payload) => {
+        const mapped = fromDb(payload.new);
+        await idb.books.put(mapped);
+        onUpdate && onUpdate(mapped);
+      }
+    )
+    .on(
+      "postgres_changes",
+      { event: "DELETE", schema: "public", table: "books", filter: `user_id=eq.${userId}` },
+      async (payload) => {
+        const id = payload.old?.id;
+        if (!id) return;
+        await idb.books.delete(id);
+        onDelete && onDelete(id);
+      }
+    )
+    .subscribe();
+  return () => {
+    try { supabase.removeChannel(channel); } catch {}
+  };
+}

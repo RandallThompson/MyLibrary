@@ -26,6 +26,7 @@ export default function AddBookModal({
   const [seriesNumber, setSeriesNumber] = useState(
     seed.seriesNumber == null ? "" : String(seed.seriesNumber)
   );
+  const [notes, setNotes] = useState(seed.notes || "");
 
   const [olResults, setOlResults] = useState([]);
   const [olLoading, setOlLoading] = useState(false);
@@ -108,7 +109,8 @@ export default function AddBookModal({
         title: title.trim(),
         author: author.trim(),
         series: series.trim() || null,
-        seriesNumber: seriesNumber === "" ? null : parseFloat(seriesNumber)
+        seriesNumber: seriesNumber === "" ? null : parseFloat(seriesNumber),
+        notes: notes.trim() || null
       };
       if (isEdit) payload.id = editing.id;
       await onSave(payload);
@@ -189,6 +191,19 @@ export default function AddBookModal({
             />
           </label>
         </div>
+
+        {isEdit && (
+          <label className="block">
+            <span className="text-[11px] uppercase tracking-wider text-[#6B5840]">Notes (optional)</span>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              placeholder="A signed copy, gift from Sam, the cover I love…"
+              className="w-full mt-1 bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-md px-3 py-2 outline-none focus:border-[#8B3A2A] text-[14px] resize-none"
+            />
+          </label>
+        )}
 
         {duplicate && !error && (
           <p className="text-xs text-[#8B3A2A]">

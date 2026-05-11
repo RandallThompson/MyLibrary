@@ -16,12 +16,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, BookOpen, ChevronDown, ChevronRight, AlertTriangle,
-  Library as LibraryIcon, Trash2, RefreshCw, Settings as SettingsIcon, Upload, Pencil, LayoutGrid
+  Library as LibraryIcon, Trash2, RefreshCw, Settings as SettingsIcon, Upload, Pencil, LayoutGrid, ScanLine
 } from "lucide-react";
 import {
   syncFromServer, getAllBooks, addBook as dsAddBook,
   removeBook as dsRemoveBook, restoreBook, bulkAdd, takeSnapshot,
-  getActiveSnapshot, restoreFromSnapshot, updateBook
+  getActiveSnapshot, restoreFromSnapshot, updateBook,
+  subscribeToBookChanges
 } from "./db/dataStore";
 import { lookupSeriesTotal } from "./lib/openlibrary";
 import { buildAuthorView, libraryStats, authorSortKey } from "./lib/series";
@@ -34,6 +35,7 @@ import Settings from "./components/Settings";
 import Snackbar from "./components/Snackbar";
 import Designer from "./components/designer/Designer";
 import Modal from "./components/Modal";
+import BarcodeScanner from "./components/BarcodeScanner";
 
 export default function Library({ session }) {
   const userId = session.user.id;
@@ -52,6 +54,8 @@ export default function Library({ session }) {
   const [showSettings, setShowSettings] = useState(false);
   const [showAbbyNote, setShowAbbyNote] = useState(false);
   const [showDesigner, setShowDesigner] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
+  const [addPrefill, setAddPrefill] = useState(null); // { title, author, isbn } from scan
 
   const [snackbar, setSnackbar] = useState(null); // { message, action, durationMs, kind, payload }
   const [refreshing, setRefreshing] = useState(false);
@@ -74,6 +78,22 @@ export default function Library({ session }) {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // Real-time sync — listen for changes to this user's books from any device.
+  useEffect(() => {
+    const unsub = subscribeToBookChanges(userId, {
+      onInsert: (mapped) => {
+        setBooks(prev => prev.some(b => b.id === mapped.id) ? prev : [...prev, mapped]);
+      },
+      onUpdate: (mapped) => {
+        setBooks(prev => prev.map(b => b.id === mapped.id ? mapped : b));
+      },
+      onDelete: (id) => {
+        setBooks(prev => prev.filter(b => b.id !== id));
+      }
+    });
+    return unsub;
+  }, [userId]);
 
   // online/offline listeners
   useEffect(() => {
@@ -489,6 +509,14 @@ export default function Library({ session }) {
         {!empty && (
           <div className="fixed bottom-5 right-5 flex flex-col gap-2 z-30">
             <button
+              onClick={() => setShowScanner(true)}
+              className="bg-[#8B3A2A] text-[#F4EBD9] w-12 h-12 rounded-full flex items-center justify-center spine-shadow hover:bg-[#2A1F14] transition"
+              aria-label="Scan a book barcode"
+              title="Scan barcode"
+            >
+              <ScanLine size={20} />
+            </button>
+            <button
               onClick={() => setShowAdd(true)}
               className="bg-[#2A1F14] text-[#F4EBD9] w-12 h-12 rounded-full flex items-center justify-center spine-shadow hover:bg-[#8B3A2A] transition"
               aria-label="Add book"
@@ -501,8 +529,31 @@ export default function Library({ session }) {
         {showAdd && (
           <AddBookModal
             books={books}
-            onClose={() => setShowAdd(false)}
+            onClose={() => { setShowAdd(false); setAddPrefill(null); }}
             onSave={handleAdd}
+            initial={addPrefill || {}}
+          />
+        )}
+
+        {showScanner && (
+          <BarcodeScanner
+            books={books}
+            onClose={() => setShowScanner(false)}
+            onAlreadyOwned={(existing) => {
+              setShowScanner(false);
+              setSnackbar({
+                message: `You own "${existing.title}"`,
+                action: null,
+                durationMs: 4000,
+                kind: "info"
+              });
+              onSelectFromSearch(existing);
+            }}
+            onScanned={(prefill) => {
+              setShowScanner(false);
+              setAddPrefill(prefill);
+              setShowAdd(true);
+            }}
           />
         )}
 
@@ -614,6 +665,11 @@ function BookCard({ book, onRemove, onEdit, highlight, registerRef }) {
           title="Remove"
         >
           <Trash2 size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}
         </button>
       </div>
     </div>
