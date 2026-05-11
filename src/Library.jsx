@@ -33,6 +33,7 @@ import ImportModal from "./components/ImportModal";
 import Settings from "./components/Settings";
 import Snackbar from "./components/Snackbar";
 import Designer from "./components/designer/Designer";
+import Modal from "./components/Modal";
 
 export default function Library({ session }) {
   const userId = session.user.id;
@@ -556,31 +557,27 @@ export default function Library({ session }) {
 }
 
 // A small, hidden surprise. No DB writes, no analytics — a private moment.
+// Uses the shared Modal so it benefits from the same proven backdrop + escape
+// + scroll handling the rest of the app uses.
 function AbbyNote({ onClose }) {
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#2A1F14]/40 backdrop-blur-sm abby-fade"
-      onClick={onClose}
-      role="dialog"
-      aria-label="A note for Abby"
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="relative bg-[#F4EBD9] border border-[#2A1F14]/15 rounded-2xl max-w-sm w-full p-10 spine-shadow text-center abby-pop"
-      >
-        <button
-          onClick={onClose}
-          className="absolute top-3 right-3 text-[#6B5840]/50 hover:text-[#2A1F14] transition"
-          aria-label="Close"
+    <Modal onClose={onClose} title="" size="sm">
+      <div className="text-center py-6 px-2">
+        <div
+          className="display font-semibold leading-tight"
+          style={{ fontSize: "1.75rem", color: "#2A1F14" }}
         >
-          <X size={18} />
-        </button>
-        <div className="display text-3xl sm:text-4xl text-[#2A1F14] leading-tight">
           I love you, Beautiful!
         </div>
-        <div className="text-2xl text-[#8B3A2A]/70 mt-5" aria-hidden="true">♡</div>
+        <div
+          className="mt-5"
+          style={{ fontSize: "1.5rem", color: "rgba(139,58,42,0.7)" }}
+          aria-hidden="true"
+        >
+          ♡
+        </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
