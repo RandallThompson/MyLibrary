@@ -670,8 +670,3 @@ function BookCard({ book, onRemove, onEdit, highlight, registerRef }) {
     </div>
   );
 }
-        </button>
-      </div>
-    </div>
-  );
-}
