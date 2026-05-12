@@ -4,7 +4,7 @@
 //   - Wipe library (typed "DELETE" confirmation; opens import after)
 //   - App version + email
 import { useState } from "react";
-import { LogOut, Download, AlertTriangle, BookOpen } from "lucide-react";
+import { LogOut, Download, AlertTriangle, BookOpen, RefreshCw } from "lucide-react";
 import Modal from "./Modal";
 import BookcaseManager from "./designer/BookcaseManager";
 import { downloadCSV } from "../lib/csvExport";
@@ -35,6 +35,26 @@ export default function Settings({
 
   const exportCSV = () => {
     downloadCSV(books, "mylibrary_export.csv");
+  };
+
+  const refetchMetadata = async () => {
+    if (!confirm(`Re-fetch covers and dimensions for all ${books.length} books? Opens the designer when ready.`)) return;
+    setBusy(true);
+    try {
+      // Null out metadata_fetched_at so the prep job picks them up again.
+      const { error: e } = await supabase
+        .from("books")
+        .update({ metadata_fetched_at: null })
+        .eq("user_id", userId);
+      if (e) throw e;
+      setBusy(false);
+      onClose();
+      // Open the designer; it auto-starts the prep job when it sees pending books.
+      window.location.reload();
+    } catch (e) {
+      setBusy(false);
+      setError(e.message || "Couldn't reset.");
+    }
   };
 
   const wipe = async () => {
@@ -75,6 +95,18 @@ export default function Settings({
             <div className="flex-1">
               <div className="text-sm">Export library</div>
               <div className="text-xs text-[#6B5840]">Download a Goodreads-format CSV ({books.length} books)</div>
+            </div>
+          </button>
+
+          <button
+            onClick={refetchMetadata}
+            disabled={busy || !books.length}
+            className="w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-lg bg-[#FBF6E9] border border-[#2A1F14]/15 hover:border-[#8B3A2A] disabled:opacity-50 transition mt-2"
+          >
+            <RefreshCw size={16} className="text-[#6B5840]" />
+            <div className="flex-1">
+              <div className="text-sm">Re-fetch covers & dimensions</div>
+              <div className="text-xs text-[#6B5840]">Look up every book again with the latest metadata sources</div>
             </div>
           </button>
         </section>

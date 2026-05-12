@@ -15,7 +15,14 @@
 //
 // xCm is the left edge of the book's spine on its shelf, in cm from the left.
 
-import { fillDimensions } from "./dimensions";
+import { fillDimensions, hasRealDimensions } from "./dimensions";
+
+// Only books with real measured dimensions get placed. Everything else goes
+// into the unmeasured list, which the Designer surfaces with a "measure these"
+// prompt that opens the photo measurer.
+function measurable(books) {
+  return books.filter(hasRealDimensions);
+}
 
 // ---------- color helpers (hex → HSL) ----------
 
@@ -77,7 +84,7 @@ function placeVerticalGreedy(books, bookcase) {
 
 // Rainbow: books sorted by hue across the entire library, then placed.
 export function rainbowLayout(books, bookcase) {
-  const filled = books.map(fillDimensions);
+  const filled = measurable(books);
   const sorted = [...filled].sort((a, b) => {
     const ha = hueOf(a), hb = hueOf(b);
     // Put colorless books at the end.
@@ -91,7 +98,7 @@ export function rainbowLayout(books, bookcase) {
 
 // Monochrome blocks: cluster by hue bucket (red/orange/yellow/green/blue/purple/neutral).
 export function monoBlockLayout(books, bookcase) {
-  const filled = books.map(fillDimensions);
+  const filled = measurable(books);
   const bucketOf = (b) => {
     const h = hueOf(b);
     if (h < 0) return 7; // neutrals last
@@ -127,7 +134,7 @@ export function monoBlockLayout(books, bookcase) {
 
 // Height rhythm: tall, short, tall, short. Pleasing visual zigzag.
 export function heightRhythmLayout(books, bookcase) {
-  const filled = books.map(fillDimensions);
+  const filled = measurable(books);
   const sorted = [...filled].sort((a, b) => b.heightCm - a.heightCm);
   // Split halves; weave.
   const tall = sorted.slice(0, Math.ceil(sorted.length / 2));
@@ -144,7 +151,7 @@ export function heightRhythmLayout(books, bookcase) {
 // We emulate by placing groups vertically, then converting roughly 1-in-12 books
 // into horizontal stacks (laid flat, height = sum of spine thicknesses).
 export function mixVertHorizLayout(books, bookcase) {
-  const filled = books.map(fillDimensions);
+  const filled = measurable(books);
   // Sort by series-friendliness first (keep series together when possible),
   // then weave in occasional stacks of 3 books laid horizontally.
   const ordered = [...filled].sort((a, b) => {
@@ -206,7 +213,7 @@ export function mixVertHorizLayout(books, bookcase) {
 
 // Shuffle: random order. Deterministic per seed for re-rendering stability.
 export function shuffleLayout(books, bookcase, { seed = Date.now() } = {}) {
-  const filled = books.map(fillDimensions);
+  const filled = measurable(books);
   // Fisher-Yates with seeded PRNG.
   const rand = mulberry32(seed);
   const arr = [...filled];

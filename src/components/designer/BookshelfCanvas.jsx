@@ -146,6 +146,26 @@ export default function BookshelfCanvas({
             const h = book.heightCm * pxPerCm;
             const y = (shelfBottomYCm - book.heightCm) * pxPerCm;
             const fill = book.dominantColorHex || "#9C8B6E";
+            // If we have a real photographed spine, render it instead of the
+            // color-block + vertical title fallback. Ground truth wins.
+            if (book.spineImageUrl) {
+              return (
+                <g
+                  key={`b-${slot.bookId}`}
+                  onPointerDown={(e) => onPointerDown(e, slot.bookId, sIdx)}
+                  style={{ cursor: onLayoutChange ? "grab" : "default" }}
+                >
+                  <image
+                    href={book.spineImageUrl}
+                    x={xPx} y={y} width={w} height={h}
+                    preserveAspectRatio="none"
+                    crossOrigin="anonymous"
+                  />
+                  <rect x={xPx} y={y} width={w} height={h} fill="none" stroke="#1c130b" strokeWidth={0.5} />
+                  <title>{book.title} — {book.author}</title>
+                </g>
+              );
+            }
 
             // Decorative "embossed bands" near top and bottom for spine realism.
             const bandTopY = y + h * 0.12;
@@ -218,6 +238,34 @@ function pointToShelf(e, svg, bookcase, pxPerCm) {
   if (xCm < 0 || xCm > bookcase.shelf_width_cm) return null;
   const stride = bookcase.shelf_height_cm + SHELF_BOARD_CM;
   const sIdx = Math.floor(yCm / stride);
+  if (sIdx < 0 || sIdx >= bookcase.shelf_count) return null;
+  return { shelfIdx: sIdx, xCm: Math.max(0, xCm) };
+}
+
+function moveBook(layout, bookId, toShelf, toXcm) {
+  const next = {
+    shelves: layout.shelves.map(s => ({ books: s.books.filter(b => b.bookId !== bookId) })),
+    overflow: layout.overflow ? [...layout.overflow] : []
+  };
+  let moved = null;
+  for (const s of layout.shelves) {
+    const f = s.books.find(b => b.bookId === bookId);
+    if (f) { moved = { ...f }; break; }
+  }
+  if (!moved) return layout;
+  const targetShelf = next.shelves[toShelf];
+  if (!targetShelf) return layout;
+  const insertAt = targetShelf.books.findIndex(b => b.xCm > toXcm);
+  if (insertAt === -1) targetShelf.books.push(moved);
+  else targetShelf.books.splice(insertAt, 0, moved);
+  let cursor = 0;
+  for (const b of targetShelf.books) {
+    b.xCm = cursor;
+    cursor += 2.5;
+  }
+  return next;
+}
+ stride);
   if (sIdx < 0 || sIdx >= bookcase.shelf_count) return null;
   return { shelfIdx: sIdx, xCm: Math.max(0, xCm) };
 }

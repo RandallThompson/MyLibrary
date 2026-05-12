@@ -1,0 +1,4 @@
+data);
+  await idb.books.put(mapped);
+  return mapped;
+}

@@ -22,9 +22,10 @@ import {
 import { supabase } from "../../supabaseClient";
 import { runPreset, PRESETS } from "../../lib/layoutAlgorithms";
 import { extractDominantColorHex } from "../../lib/colorExtract";
-import { fillDimensions } from "../../lib/dimensions";
+import { fillDimensions, hasRealDimensions } from "../../lib/dimensions";
 import { getOrStartPrepJob, runPrepJob } from "../../lib/prepJob";
 import BookshelfCanvas from "./BookshelfCanvas";
+import ShelfPhotoMeasurer from "./ShelfPhotoMeasurer";
 
 export default function Designer({ userId, userEmail, onClose }) {
   const [phase, setPhase] = useState("loading"); // loading | prep | ready
@@ -38,6 +39,7 @@ export default function Designer({ userId, userEmail, onClose }) {
   const [arrangements, setArrangements] = useState([]);
   const [saving, setSaving] = useState(false);
   const [arrangementName, setArrangementName] = useState("");
+  const [showMeasurer, setShowMeasurer] = useState(false);
   const abortRef = useRef(null);
 
   // ---------- bootstrap ----------
@@ -234,6 +236,8 @@ export default function Designer({ userId, userEmail, onClose }) {
               onChangeBookcase={setActiveBookcase}
               presetId={presetId}
               onChangePreset={setPresetId}
+              unmeasuredCount={books.filter(b => !hasRealDimensions(b)).length}
+              onOpenMeasurer={() => setShowMeasurer(true)}
             />
 
             <div className="my-6">
@@ -264,6 +268,33 @@ export default function Designer({ userId, userEmail, onClose }) {
           </>
         )}
       </main>
+
+      {showMeasurer && (
+        <ShelfPhotoMeasurer
+          userId={userId}
+          books={books}
+          onClose={async () => {
+            setShowMeasurer(false);
+            // Re-pull books from server so newly measured ones render.
+            const { data: serverBooks } = await supabase.from("books").select("*");
+            if (serverBooks) {
+              const serverMap = new Map(serverBooks.map(b => [b.id, b]));
+              setBooks(prev => prev.map(b => {
+                const s = serverMap.get(b.id);
+                if (!s) return b;
+                return {
+                  ...b,
+                  spineImageUrl: s.spine_image_url || null,
+                  heightCm: s.height_cm == null ? null : Number(s.height_cm),
+                  spineThicknessCm: s.spine_thickness_cm == null ? null : Number(s.spine_thickness_cm),
+                  dimensionsMeasuredAt: s.dimensions_measured_at || null
+                };
+              }));
+            }
+          }}
+          onMeasured={() => { /* state refresh happens onClose */ }}
+        />
+      )}
     </div>
   );
 }
@@ -302,9 +333,25 @@ function NoBookcases() {
   );
 }
 
-function Toolbar({ bookcases, activeBookcase, onChangeBookcase, presetId, onChangePreset }) {
+function Toolbar({ bookcases, activeBookcase, onChangeBookcase, presetId, onChangePreset, unmeasuredCount, onOpenMeasurer }) {
   return (
     <div className="space-y-3">
+      {unmeasuredCount > 0 && (
+        <div className="bg-[#FBF6E9] border border-[#8B3A2A]/30 rounded-lg p-3 flex items-center justify-between gap-3">
+          <div className="text-sm">
+            <span className="font-medium text-[#8B3A2A]">{unmeasuredCount}</span>{" "}
+            <span className="text-[#6B5840]">
+              {unmeasuredCount === 1 ? "book is" : "books are"} unmeasured and won't show on the shelf yet.
+            </span>
+          </div>
+          <button
+            onClick={onOpenMeasurer}
+            className="bg-[#8B3A2A] text-[#F4EBD9] px-3 py-1.5 rounded-full text-xs hover:bg-[#2A1F14] transition shrink-0"
+          >
+            Measure from photo
+          </button>
+        </div>
+      )}
       <div>
         <div className="text-[10px] uppercase tracking-wider text-[#6B5840] mb-1.5">Bookcase</div>
         <div className="flex flex-wrap gap-2">
@@ -336,6 +383,59 @@ function Toolbar({ bookcases, activeBookcase, onChangeBookcase, presetId, onChan
                 presetId === p.id
                   ? "bg-[#2A1F14] text-[#F4EBD9] border-[#2A1F14]"
                   : "border-[#2A1F14]/20 hover:border-[#8B3A2A]"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SaveBar({ arrangementName, setArrangementName, onSave, saving, arrangements, onLoad, onRemove }) {
+  return (
+    <div className="space-y-4">
+      <div className="bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-lg p-3">
+        <div className="text-[10px] uppercase tracking-wider text-[#6B5840] mb-1.5">Save this arrangement</div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={arrangementName}
+            onChange={(e) => setArrangementName(e.target.value)}
+            placeholder='e.g. "Rainbow living room"'
+            className="flex-1 bg-[#F4EBD9] border border-[#2A1F14]/15 rounded-md px-3 py-2 outline-none focus:border-[#8B3A2A] text-sm"
+          />
+          <button
+            onClick={onSave}
+            disabled={saving || !arrangementName.trim()}
+            className="bg-[#2A1F14] text-[#F4EBD9] px-4 py-2 rounded-full text-sm flex items-center gap-2 disabled:opacity-30 hover:bg-[#8B3A2A] transition"
+          >
+            <Save size={14} /> {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+
+      {arrangements.length > 0 && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-[#6B5840] mb-2">Saved arrangements</div>
+          <ul className="space-y-1">
+            {arrangements.map(a => (
+              <li key={a.id} className="flex items-center justify-between gap-3 bg-[#FBF6E9] border border-[#2A1F14]/10 rounded-md px-3 py-2">
+                <button onClick={() => onLoad(a)} className="display text-sm hover:text-[#8B3A2A] truncate text-left flex-1">
+                  {a.name}
+                </button>
+                <span className="text-[10px] uppercase tracking-wider text-[#6B5840]">{a.preset || "manual"}</span>
+                <button onClick={() => onRemove(a)} className="text-[#6B5840] hover:text-[#8B3A2A]">×</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
               }`}
             >
               {p.label}

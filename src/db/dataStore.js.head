@@ -402,8 +402,3 @@ export async function uploadSpineImage(userId, bookId, blob, { heightCm, spineTh
     spine_thickness_cm: spineThicknessCm,
     dimensions_measured_at: new Date().toISOString()
   }).eq("id", bookId).select().single();
-  if (error) throw error;
-  const mapped = fromDb(data);
-  await idb.books.put(mapped);
-  return mapped;
-}

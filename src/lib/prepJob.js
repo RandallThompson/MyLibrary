@@ -3,7 +3,7 @@
 import { supabase } from "../supabaseClient";
 import { fetchGoogleBooksMetadata } from "./googleBooks";
 import { searchBooks as olSearch, fetchOpenLibraryEdition } from "./openlibrary";
-import { estimateHeightCm, estimateSpineThicknessCm } from "./dimensions";
+
 
 const CHUNK_SIZE = 6;
 const SLEEP_BETWEEN_CHUNKS_MS = 100;
@@ -40,13 +40,14 @@ function pick(...vals) {
 }
 
 function finalize(m) {
-  const binding = m.binding || "paperback";
   return {
     coverUrl: m.coverUrl || null,
     pageCount: m.pageCount || null,
-    binding,
-    heightCm: m.heightCm || estimateHeightCm({ binding }),
-    spineThicknessCm: m.spineThicknessCm || estimateSpineThicknessCm({ pageCount: m.pageCount, binding })
+    binding: m.binding || null,
+    // Real numbers only. Null when both APIs returned nothing — book will
+    // show as "unmeasured" until the photo measurer fills it in.
+    heightCm: m.heightCm || null,
+    spineThicknessCm: m.spineThicknessCm || null
   };
 }
 
