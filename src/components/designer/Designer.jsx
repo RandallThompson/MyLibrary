@@ -436,16 +436,6 @@ function SaveBar({ arrangementName, setArrangementName, onSave, saving, arrangem
     </div>
   );
 }
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function SaveBar({ arrangementName, setArrangementName, onSave, saving, arrangements, onLoad, onRemove }) {
   return (
