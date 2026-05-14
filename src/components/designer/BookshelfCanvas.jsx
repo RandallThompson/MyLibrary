@@ -265,31 +265,3 @@ function moveBook(layout, bookId, toShelf, toXcm) {
   }
   return next;
 }
- stride);
-  if (sIdx < 0 || sIdx >= bookcase.shelf_count) return null;
-  return { shelfIdx: sIdx, xCm: Math.max(0, xCm) };
-}
-
-function moveBook(layout, bookId, toShelf, toXcm) {
-  const next = {
-    shelves: layout.shelves.map(s => ({ books: s.books.filter(b => b.bookId !== bookId) })),
-    overflow: layout.overflow ? [...layout.overflow] : []
-  };
-  let moved = null;
-  for (const s of layout.shelves) {
-    const f = s.books.find(b => b.bookId === bookId);
-    if (f) { moved = { ...f }; break; }
-  }
-  if (!moved) return layout;
-  const targetShelf = next.shelves[toShelf];
-  if (!targetShelf) return layout;
-  const insertAt = targetShelf.books.findIndex(b => b.xCm > toXcm);
-  if (insertAt === -1) targetShelf.books.push(moved);
-  else targetShelf.books.splice(insertAt, 0, moved);
-  let cursor = 0;
-  for (const b of targetShelf.books) {
-    b.xCm = cursor;
-    cursor += 2.5;
-  }
-  return next;
-}
