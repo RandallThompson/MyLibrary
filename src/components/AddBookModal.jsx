@@ -12,6 +12,18 @@ import Combobox from "./Combobox";
 import { searchBooks as olSearch } from "../lib/openlibrary";
 import { normalizedKey } from "../lib/normalize";
 
+const JUNK_TERMS = [
+  'summary', 'study guide', 'trivia', 'workbook', 'analysis',
+  'sparknotes', 'cliff notes', 'cliffnotes', 'quicklet', 'like a pro'
+];
+
+function filterJunk(results) {
+  return results.filter(r => {
+    const t = (r.title || '').toLowerCase();
+    return !JUNK_TERMS.some(term => t.includes(term));
+  });
+}
+
 export default function AddBookModal({
   books,
   onClose,
@@ -37,6 +49,8 @@ export default function AddBookModal({
 
   const olAbortRef = useRef(null);
   const olTimerRef = useRef(null);
+  const dropdownRef = useRef(null);
+  const inputRef = useRef(null);
 
   const isEdit = !!editing;
 
@@ -48,6 +62,26 @@ export default function AddBookModal({
     () => Array.from(new Set(books.map(b => b.series).filter(Boolean))).sort(),
     [books]
   );
+
+  // Click-outside / touch-outside closes the dropdown. Never on blur — mobile
+  // keyboards trigger spurious blur events.
+  useEffect(() => {
+    if (!olOpen) return;
+    const handler = (e) => {
+      if (
+        !dropdownRef.current?.contains(e.target) &&
+        !inputRef.current?.contains(e.target)
+      ) {
+        setOlOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('touchstart', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('touchstart', handler);
+    };
+  }, [olOpen]);
 
   // Debounced OpenLibrary lookup. Skipped in edit mode — autocomplete on
   // already-saved books would be confusing.
@@ -64,12 +98,13 @@ export default function AddBookModal({
       const ctrl = new AbortController();
       olAbortRef.current = ctrl;
       setOlLoading(true);
+      setOlOpen(true); // open immediately so panel shows "Searching…" without flicker
       olSearch(title, { signal: ctrl.signal })
         .then(rs => {
-          if (!ctrl.signal.aborted) {
-            setOlResults(rs);
-            setOlOpen(rs.length > 0);
-          }
+          if (!ctrl.signal.aborted) setOlResults(rs);
+        })
+        .catch(() => {
+          if (!ctrl.signal.aborted) setOlResults([]);
         })
         .finally(() => { if (!ctrl.signal.aborted) setOlLoading(false); });
     }, 300);
@@ -92,6 +127,8 @@ export default function AddBookModal({
     if (s.seriesNumber != null) setSeriesNumber(String(s.seriesNumber));
     setOlOpen(false);
   };
+
+  const dismissDropdown = () => setOlOpen(false);
 
   const save = async () => {
     setError("");
@@ -124,6 +161,8 @@ export default function AddBookModal({
     setBusy(false);
   };
 
+  const filteredResults = filterJunk(olResults);
+
   return (
     <Modal onClose={onClose} title={isEdit ? "Edit book" : "Add a book"} size="md">
       <div className="space-y-3">
@@ -131,35 +170,59 @@ export default function AddBookModal({
         <label className="block relative">
           <span className="text-[11px] uppercase tracking-wider text-[#6B5840]">Title</span>
           <input
+            ref={inputRef}
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onFocus={() => !isEdit && olResults.length && setOlOpen(true)}
+            onKeyDown={(e) => { if (e.key === 'Escape') setOlOpen(false); }}
             autoFocus
             className="w-full mt-1 bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-md px-3 py-2 outline-none focus:border-[#8B3A2A] text-[15px]"
           />
-          {!isEdit && olOpen && olResults.length > 0 && (
-            <div className="absolute left-0 right-0 mt-1 bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-md max-h-72 overflow-y-auto z-50 spine-shadow">
+          {!isEdit && olOpen && (
+            <div
+              ref={dropdownRef}
+              className="absolute left-0 right-0 mt-1 bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-md max-h-72 overflow-y-auto z-50 spine-shadow"
+            >
               <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-[#6B5840] border-b border-[#2A1F14]/10">
-                OpenLibrary {olLoading ? "..." : ""}
+                {olLoading ? "Searching…" : "OpenLibrary"}
               </div>
-              <ul>
-                {olResults.map((r, i) => (
-                  <li key={`${r.workKey || i}`}>
+              {olLoading ? null : filteredResults.length > 0 ? (
+                <ul>
+                  {filteredResults.map((r, i) => (
+                    <li key={`${r.workKey || i}`}>
+                      <button
+                        type="button"
+                        onClick={() => pickSuggestion(r)}
+                        className="w-full text-left px-3 py-2 hover:bg-[#F4EBD9] block"
+                      >
+                        <div className="text-sm display">{r.title}</div>
+                        <div className="text-xs text-[#6B5840]">
+                          {r.author}
+                          {r.series ? ` — ${r.series}${r.seriesNumber != null ? ` #${r.seriesNumber}` : ""}` : ""}
+                        </div>
+                      </button>
+                    </li>
+                  ))}
+                  <li>
                     <button
                       type="button"
-                      onClick={() => pickSuggestion(r)}
-                      className="w-full text-left px-3 py-2 hover:bg-[#F4EBD9] block"
+                      onClick={dismissDropdown}
+                      className="w-full text-left px-3 py-2 text-xs text-[#6B5840] hover:bg-[#F4EBD9] border-t border-[#2A1F14]/10 italic"
                     >
-                      <div className="text-sm display">{r.title}</div>
-                      <div className="text-xs text-[#6B5840]">
-                        {r.author}
-                        {r.series ? ` — ${r.series}${r.seriesNumber != null ? ` #${r.seriesNumber}` : ""}` : ""}
-                      </div>
+                      None of these — type manually
                     </button>
                   </li>
-                ))}
-              </ul>
+                </ul>
+              ) : (
+                <button
+                  type="button"
+                  onClick={dismissDropdown}
+                  className="w-full text-left px-3 py-2 text-xs text-[#6B5840] hover:bg-[#F4EBD9] italic"
+                >
+                  No matches — type manually
+                </button>
+              )}
             </div>
           )}
         </label>
