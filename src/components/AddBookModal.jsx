@@ -262,7 +262,7 @@ export default function AddBookModal({
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={3}
-              placeholder="A signed copy, gift from Sam, the cover I love…"
+              placeholder="Gave me wet dreams on MM-DD-YYY. Woke up and REEEALLY wanted to test the tensile strength of that morning wood..."
               className="w-full mt-1 bg-[#FBF6E9] border border-[#2A1F14]/15 rounded-md px-3 py-2 outline-none focus:border-[#8B3A2A] text-[14px] resize-none"
             />
           </label>
